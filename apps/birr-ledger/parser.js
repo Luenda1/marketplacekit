@@ -4,18 +4,18 @@
   "use strict";
 
   const CATS = [
-    { id: "food", label: "Food & groceries", kw: /supermarket|market|\bmart\b|grocer|shoa|queens|caf[eé]|restaurant|food|bakery|pizza|burger|kitchen|butcher|fruit|juice|coffee|hotel|lounge|meal|lunch|dinner|breakfast/i },
-    { id: "transport", label: "Transport & fuel", kw: /\bride\b|feres|zayride|yango|taxi|fuel|petrol|benzine|total ?energies|\bnoc\b|oil libya|\bbus\b|transport|parking|ethiopian airlines|flight/i },
+    { id: "food", label: "Food & groceries", kw: /\bmisa\b|\bmsa\b|\bkurs\b|\berat\b|\bsiga\b|zeyit|gebeya|\bbuna\b|\bdabo\b|atkilt|injera|\bmeat\b|mango|supermarket|market|\bmart\b|grocer|shoa|queens|caf[eé]|restaurant|food|bakery|pizza|burger|kitchen|butcher|fruit|juice|coffee|hotel|lounge|meal|lunch|dinner|breakfast/i },
+    { id: "transport", label: "Transport & fuel", kw: /benzin|nedaj|\bride\b|feres|zayride|yango|taxi|fuel|petrol|benzine|total ?energies|\bnoc\b|oil libya|\bbus\b|transport|parking|ethiopian airlines|flight/i },
     { id: "airtime", label: "Airtime & internet", kw: /airtime|package|top ?up|\bdata\b|ethio ?telecom|safaricom|internet|wifi|mobile card/i },
     { id: "bills", label: "Bills & utilities", kw: /electric|\beeu\b|\bpower\b|water|aawsa|dstv|canal|\bbill\b|utility|subscription/i },
-    { id: "rent", label: "Rent & housing", kw: /\brent\b|house|landlord|condominium|kebele|apartment/i },
+    { id: "rent", label: "Rent & housing", kw: /kiray|^bet\b|\brent\b|house|landlord|condominium|kebele|apartment/i },
     { id: "health", label: "Health", kw: /pharma|clinic|hospital|medical|health|laboratory|dental|medicine/i },
     { id: "education", label: "Education", kw: /school|tuition|university|college|academy|course|training|books?\b/i },
-    { id: "shopping", label: "Shopping", kw: /\bshop\b|store|boutique|cloth|fashion|electronic|\bmall\b|shoes/i },
+    { id: "shopping", label: "Shopping", kw: /\blibs\b|libis|tsegur|\bshop\b|store|boutique|cloth|fashion|electronic|\bmall\b|shoes/i },
     { id: "cash", label: "Cash withdrawal", kw: /\batm\b|withdraw/i },
     { id: "savings", label: "Savings & equb", kw: /equb|iqub|saving|invest|shares?\b/i },
-    { id: "people", label: "Family & people" },
-    { id: "other", label: "Other spending" },
+    { id: "people", label: "Family & people", kw: /gift|\bserg\b|lekso|family|contribution/i },
+    { id: "other", label: "Other / no description" },
     { id: "salary", label: "Salary", kw: /salary|payroll|\bwage/i, income: true },
     { id: "received", label: "Received from people", income: true },
     { id: "income_other", label: "Other income", income: true },
@@ -150,7 +150,7 @@
     if (tx.kind === "cash") return "cash";
     if (tx.kind === "airtime") return "airtime";
     for (const c of CATS) if (c.kw && !c.income && c.id !== "cash" && c.kw.test(hay)) return c.id;
-    if (looksLikePerson(tx.party)) return "people";
+    if (CATS[10].kw.test(hay) || looksLikePerson(tx.party)) return "people";
     return "other";
   }
 
@@ -232,7 +232,87 @@
     return tx;
   }
 
+  /* ---- Bank statements (CBE PDF or its copied text) ---- */
+  const STMT_TYPES = ["Mobile Debit", "Mobile Credit", "Mobile Money", "Commission Paid", "Tax Amount Due", "Internet Debit", "Internet Credit", "Credit Interest", "Cash Withdrawal", "Cash Deposit", "ATM Withdrawal", "POS Purchase", "Transfer", "Salary"];
+  const STMT_ROW = /^\s*(\d{2})\s+([A-Z]{3})\s+(\d{2})\s+\d{2}\s+[A-Z]{3}\s+\d{2}\s+(.*?)\s+(-?[\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s*$/;
+  function isStatement(text) {
+    return /starting balance\s*:?\s*-?[\d,]+\.\d{2}/i.test(text) && /\b\d{2}\s+[A-Z]{3}\s+\d{2}\s+\d{2}\s+[A-Z]{3}\s+\d{2}\b/.test(text);
+  }
+  /* CBE folds the service charge and VAT into the debit; the cents give the fee tier away. */
+  function stmtFee(amt, narr, type) {
+    if (/commission|tax amount/i.test(type)) return amt;
+    if (!/debit/i.test(type)) return 0;
+    const c = amt.toFixed(2).slice(-2), w = Math.floor(amt);
+    if (/teleb/i.test(narr)) {
+      if (c === "50") return 11.5;
+      if (c === "00" && (w % 1000 === 12 || w % 1000 === 18)) return w % 1000;
+      if (c === "00" && w % 500 === 12) return 12;
+      return 0;
+    }
+    const T = { "58": 0.58, "61": 0.61, "15": 1.15, "20": 1.2, "30": 2.3, "40": 2.4, "45": 3.45, "60": 3.6, "75": 5.75 };
+    const f = T[c] || 0;
+    return f && amt - f >= 1 ? f : 0;
+  }
+  function parseStatement(text, opts) {
+    opts = opts || {};
+    const g = re => { const m = text.match(re); return m ? m[1] : ""; };
+    const start = num(g(/starting balance\s*:?\s*(-?[\d,]+\.\d{2})/i));
+    const endS = g(/end(?:ing)? balance\s*:?\s*(-?[\d,]+\.\d{2})/i);
+    const bank = /commercial bank of ethiopia|የኢትዮጵያ ንግድ ባንክ/i.test(text) ? "CBE" : detectBank(text);
+    const cust = g(/customer name\s*:?\s*([A-Z][A-Z .'-]{2,60}?)\s*(?:\n|currency|$)/i).trim();
+    const holder = cust ? cust.toLowerCase().replace(/\b[a-z]/g, c => c.toUpperCase()) : "";
+    const out = [];
+    let prev = start, breaks = 0;
+    for (const line of text.split(/\n/)) {
+      const m = line.match(STMT_ROW);
+      if (!m || !MON[m[2].toLowerCase()]) continue;
+      const date = "20" + m[3] + "-" + pad(MON[m[2].toLowerCase()]) + "-" + m[1];
+      const mid = m[4].replace(/\s+/g, " ").trim();
+      const amt = num(m[5]), bal = num(m[6]);
+      const type = STMT_TYPES.find(t => mid.toLowerCase().startsWith(t.toLowerCase())) || "";
+      const rest = mid.slice(type.length).trim();
+      const sp = rest.indexOf(" ");
+      const ref = (sp < 0 ? rest : rest.slice(0, sp)).split("\\")[0];
+      const narr = sp < 0 ? "" : rest.slice(sp + 1).trim();
+      const diff = round2(bal - prev);
+      if (Math.abs(Math.abs(diff) - amt) > 0.01) breaks++;
+      const dir = diff > 0 ? "in" : "out";
+      prev = bal;
+      const n = narr.replace(/\s+done\s+via.*$/i, "").replace(/\s+done\s+v?$/i, "").trim();
+      const generic = !n || /^(mb transfer|pay|pp|mobile banking.*|qr code txn|a2a transfer|[A-Z0-9]{8,}|\d{6,}0*)$/i.test(n);
+      const purpose = generic ? "" : clean(n);
+      const fee = dir === "out" ? round2(stmtFee(amt, narr, type)) : 0;
+      const isFee = /commission|tax amount/i.test(type);
+      let kind = dir === "in" ? "received" : "transfer", cat;
+      if (isFee) { kind = "fee"; cat = "other"; }
+      else if (/teleb/i.test(narr) || /mobile money/i.test(type)) { kind = "wallet"; cat = "own"; }
+      else if (/cash withdrawal|atm/i.test(type) || /^cash\b/i.test(n)) { kind = "cash"; cat = "cash"; }
+      else if (/credit interest/i.test(type)) { cat = "income_other"; }
+      const tx = {
+        bank, dir, amount: isFee ? 0 : round2(amt - fee), fee, balance: bal,
+        party: isFee ? "Bank fee" : /credit interest/i.test(type) ? "Interest" : /teleb/i.test(narr) ? "telebirr wallet" : "",
+        purpose: isFee ? (narr || type) : purpose, kind, date, time: "", ref,
+        raw: (type + " · " + (narr || "") + " · " + m[5] + " · bal " + m[6]).slice(0, 200), src: "statement"
+      };
+      const shared = isFee || /interest|cash withdrawal/i.test(type) || !ref;
+      tx.key = shared ? hash([bank, ref, type, date, amt, bal].join("|")) : (bank + ":" + ref + (dir === "in" && /debit/i.test(type) ? ":reversal" : "")).toLowerCase();
+      if (dir === "in" && /debit/i.test(type)) tx.purpose = "Reversal" + (tx.purpose ? " · " + tx.purpose : "");
+      if (!cat) {
+        if (dir === "in") cat = /^transfer|internet credit/i.test(type) ? "income_other" : (/salary|payroll/i.test(n) ? "salary" : "received");
+        else cat = categorize(Object.assign({}, tx, { party: "" }), opts.rules, holder);
+      }
+      if (opts.rules && purpose && opts.rules[partyKey(purpose)]) cat = opts.rules[partyKey(purpose)];
+      tx.cat = cat;
+      out.push(tx);
+    }
+    const end = endS ? num(endS) : null;
+    out.statement = { bank, holder, start, end, last: prev, breaks, ok: !breaks && (end == null || Math.abs(prev - end) < 0.01), from: out.length ? out[0].date : "", to: out.length ? out[out.length - 1].date : "" };
+    out.holder = holder;
+    return out;
+  }
+
   function parseMany(text, opts) {
+    if (isStatement(text)) return parseStatement(text, opts);
     opts = Object.assign({}, opts);
     const parts = split(text);
     if (!opts.holder) {
@@ -247,5 +327,5 @@
     return out;
   }
 
-  root.BirrParser = { holderName, CATS, BANK_NAMES, parseOne, parseMany, split, categorize, partyKey, detectBank };
+  root.BirrParser = { isStatement, parseStatement, holderName, CATS, BANK_NAMES, parseOne, parseMany, split, categorize, partyKey, detectBank };
 })(typeof window !== "undefined" ? window : globalThis);

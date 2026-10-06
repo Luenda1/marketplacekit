@@ -221,7 +221,7 @@ function totals(list){
     fees += t.fee||0;
     if (t.cat === "own") continue;
     if (t.dir === "in") inn += t.amount;
-    else { out += t.amount; byCat[t.cat] = (byCat[t.cat]||0) + t.amount; const p = t.party || CAT[t.cat].label; (byParty[p] = byParty[p] || {n:0,v:0}); byParty[p].n++; byParty[p].v += t.amount; }
+    else if (t.amount) { out += t.amount; byCat[t.cat] = (byCat[t.cat]||0) + t.amount; const p = t.party || CAT[t.cat].label; (byParty[p] = byParty[p] || {n:0,v:0}); byParty[p].n++; byParty[p].v += t.amount; }
   }
   return { out, inn, fees, spent: out+fees, net: inn-out-fees, byCat, byParty };
 }
@@ -345,7 +345,7 @@ function txRow(t){
   const sign = own ? "" : t.dir === "in" ? "+" : "−";
   const cls = own ? "own" : t.dir;
   const open = UI.open === t.id;
-  let h = `<button class="tx" data-act="open" data-id="${t.id}" aria-expanded="${open}">${bankBadge(t.bank)}<span class="mid"><span class="who">${esc(t.party || CAT[t.cat].label)}</span><span class="meta">${esc(CAT[t.cat].label)}${t.purpose?" · "+esc(t.purpose):""}${t.time?" · "+esc(t.time):""}</span></span><span class="amt ${cls}"><span>${sign}${money(t.amount)}</span>${t.fee?`<small>fee ${money(t.fee)}</small>`:""}</span></button>`;
+  let h = `<button class="tx" data-act="open" data-id="${t.id}" aria-expanded="${open}">${bankBadge(t.bank)}<span class="mid"><span class="who">${esc(t.party || t.purpose || (t.kind==="transfer"?"Transfer":CAT[t.cat].label))}</span><span class="meta">${esc(CAT[t.cat].label)}${t.purpose?" · "+esc(t.purpose):""}${t.time?" · "+esc(t.time):""}</span></span><span class="amt ${cls}">${t.amount?`<span>${sign}${money(t.amount)}</span>${t.fee?`<small>fee ${money(t.fee)}</small>`:""}`:`<span>−${money(t.fee)}</span><small>bank fee</small>`}</span></button>`;
   if (open){
     h += `<div class="edit">
       <div class="row"><div class="field"><label for="e-cat">Category</label><select class="inp" id="e-cat" data-chg="cat" data-id="${t.id}">${catOptions(t.cat, t.dir)}</select></div>
@@ -421,7 +421,7 @@ function viewMonth(){
   const budgetTotal = Object.values(S.budgets).reduce((s,v) => s+(+v||0), 0);
   const d = prev.spent ? (cur.spent-prev.spent)/prev.spent : null;
   const daysIn = +b.slice(8), daysGone = isThis ? +t.slice(8) : daysIn;
-  const pace = isThis && daysGone ? cur.spent/daysGone*daysIn : null;
+  const pace = isThis && daysGone >= 7 ? cur.spent/daysGone*daysIn : null;
   let p = `Income <b>ETB ${money0(cur.inn)}</b>, spending <b>ETB ${money0(cur.spent)}</b>, so you ${cur.net>=0?"kept":"are short"} <b>ETB ${money0(Math.abs(cur.net))}</b>.`;
   if (pace && isThis) p += ` At this pace the month ends near ETB ${money0(pace)} in spending.`;
   if (budgetTotal) p += ` Your budgets add up to ETB ${money0(budgetTotal)}.`;
@@ -468,18 +468,29 @@ function viewAdd(){
     <div class="field"><label for="paste">Paste one message or many. Repeated messages are skipped.</label><textarea class="inp" id="paste" data-inp="paste" placeholder="Dear … You have successfully transferred ETB1,000.00 from account 1****5919 to …">${esc(UI.paste)}</textarea></div>
     <div class="row"><div class="field"><label for="fb-date">Date for messages without one</label><input class="inp" type="date" id="fb-date" data-inp="fbdate" value="${UI.fallbackDate}" max="${todayKey()}"></div>
     <div class="field"><label for="bank">Bank</label><select class="inp" id="bank" data-inp="bank"><option value="auto">Detect automatically</option>${P.BANK_NAMES.map(b => `<option${UI.bank===b?" selected":""}>${esc(b)}</option>`).join("")}</select></div></div>
-    <div class="row"><button class="btn" data-act="read" ${UI.paste.trim()?"":"disabled"}>Read messages</button><button class="btn quiet" data-act="example">Try example messages</button>${UI.paste?`<button class="btn quiet" data-act="clear">Clear</button>`:""}</div>
+    <div class="row"><button class="btn" data-act="read" ${UI.paste.trim()?"":"disabled"}>Read messages</button><button class="btn quiet" data-act="example">Try example messages</button>${UI.paste||UI.preview?`<button class="btn quiet" data-act="clear">Clear</button>`:""}</div>
+  </div></section>
+  <section><div class="card pad" style="display:flex;flex-direction:column;gap:10px">
+    <div class="sec-head"><h3>Import a bank statement</h3><span class="pill">PDF</span></div>
+    <p class="small muted">Download the statement from your bank app (CBE works today) and upload it here. Every row is checked against the statement's running balance.</p>
+    <label class="btn ghost" for="pdf-in" style="cursor:pointer">${UI.pdfBusy?esc(UI.pdfBusy):"Choose statement PDF"}</label>
+    <input id="pdf-in" type="file" accept="application/pdf,.pdf" hidden ${UI.pdfBusy?"disabled":""}>
   </div></section>`;
 
   if (UI.preview){
     const pv = UI.preview, ok = pv.filter(x => !x.skip && !x.dup), skipped = pv.filter(x => x.skip), dup = pv.filter(x => x.dup);
+    const st = pv.statement;
+    if (st) h += `<section><div class="card pad" style="display:flex;flex-direction:column;gap:6px;border:1.5px solid ${st.ok?"var(--in)":"var(--warn)"}"><div class="sec-head"><h3>${esc(st.bank)} statement${st.holder?" · "+esc(st.holder):""}</h3><span class="pill">${pv.length} rows</span></div><p class="small muted">${st.from?dayLabel(st.from)+" "+st.from.slice(0,4)+" to "+dayLabel(st.to)+" "+st.to.slice(0,4):""}</p><p style="font-weight:600;color:${st.ok?"var(--in)":"var(--warn)"}">${st.ok?`Balance check passed: ETB ${money(st.start)} to ETB ${money(st.last)}, every row adds up.`:`Balance check found ${st.breaks} row${st.breaks===1?"":"s"} that don't add up. Check them before relying on the totals.`}</p></div></section>`;
     h += `<section><div class="sec-head"><h2>Found ${ok.length} new transaction${ok.length===1?"":"s"}</h2><span class="meta">${dup.length?dup.length+" already saved":""}${dup.length&&skipped.length?" · ":""}${skipped.length?skipped.length+" skipped":""}</span></div><div class="card list">`;
+    const CAP = 40;
     pv.forEach((x,i) => {
+      if (i >= CAP) return;
       if (x.skip){ h += `<div class="pv dim"><div class="row" style="justify-content:space-between"><span class="pill warn">Skipped: ${esc(x.skip)}</span></div><div class="raw">${esc(x.raw)}</div></div>`; return; }
       const own = x.cat === "own";
-      h += `<div class="pv${x.dup?" dim":""}"><div class="pv-top">${bankBadge(x.bank)}<div class="mid"><div class="who" style="font-weight:600">${esc(x.party || CAT[x.cat].label)}</div><div class="small muted">${esc(x.bank)}${x.purpose?" · "+esc(x.purpose):""}${x.balance!=null?" · bal "+money(x.balance):""}</div></div><div class="amt ${own?"own":x.dir}" style="font-weight:700;text-align:right"><div>${own?"":x.dir==="in"?"+":"−"}${money(x.amount)}</div>${x.fee?`<div class="small muted">fee ${money(x.fee)}</div>`:""}</div></div>
+      h += `<div class="pv${x.dup?" dim":""}"><div class="pv-top">${bankBadge(x.bank)}<div class="mid"><div class="who" style="font-weight:600">${esc(x.party || x.purpose || (x.kind==="transfer"?"Transfer":CAT[x.cat].label))}</div><div class="small muted">${esc(x.bank)}${x.purpose?" · "+esc(x.purpose):""}${x.balance!=null?" · bal "+money(x.balance):""}</div></div><div class="amt ${own?"own":x.dir}" style="font-weight:700;text-align:right"><div>${own?"":x.dir==="in"?"+":"−"}${money(x.amount)}</div>${x.fee?`<div class="small muted">fee ${money(x.fee)}</div>`:""}</div></div>
       ${x.dup?`<span class="pill dup">Already saved</span>`:`<div class="pv-grid"><select class="inp" aria-label="Category" data-pv="cat" data-i="${i}">${catOptions(x.cat, x.dir)}</select><input class="inp" type="date" aria-label="Date" data-pv="date" data-i="${i}" value="${x.date}" max="${todayKey()}"></div>${x.dateGuessed?`<span class="small" style="color:var(--warn)">The message has no date, so it uses the date above. Change it if needed.</span>`:""}`}</div>`;
     });
+    if (pv.length > CAP) h += `<div class="empty">${pv.length-CAP} more rows will be saved with automatic categories. You can change any of them later in History.</div>`;
     h += `</div><div class="row"><button class="btn" data-act="save" ${ok.length?"":"disabled"}>Save ${ok.length} transaction${ok.length===1?"":"s"}</button>${UI.sample && ok.length?`<button class="btn ghost" data-act="ai" ${UI.aiBusy?"disabled":""}>${I.spark}${UI.aiBusy?"Claude is reading…":"Let Claude check the categories"}</button>`:""}</div></section>`;
   }
 
@@ -545,11 +556,21 @@ let tt;
 function toast(msg){ const el = document.getElementById("toast"); el.textContent = msg; el.hidden = false; clearTimeout(tt); tt = setTimeout(() => el.hidden = true, 2600); }
 
 /* ---------- reading messages ---------- */
-function readPaste(){
-  const res = P.parseMany(UI.paste, { today: todayKey(), fallbackDate: UI.fallbackDate, bank: UI.bank, rules: S.rules, holder: S.holder });
+function readPaste(){ readText(UI.paste); }
+function readText(text){
+  const res = P.parseMany(text, { today: todayKey(), fallbackDate: UI.fallbackDate, bank: UI.bank, rules: S.rules, holder: S.holder });
   if (res.holder && (!S.holder || res.holder.split(" ").length > S.holder.split(" ").length)){ S.holder = res.holder; persist(["settings"]); }
   const known = knownKeys(), seen = new Set();
-  UI.preview = res.map(x => { if (x.skip) return x; const dup = known.has(x.key) || seen.has(x.key); seen.add(x.key); return Object.assign(x, { dup }); });
+  const sig = t => [t.bank, t.date, t.dir, Math.round(((t.amount||0)+(t.fee||0))*100)].join("|");
+  const pool = {}; for (const t of allTx()) pool[sig(t)] = (pool[sig(t)]||0) + 1;
+  const preview = res.map(x => {
+    if (x.skip) return x;
+    let dup = known.has(x.key) || seen.has(x.key);
+    if (!dup && pool[sig(x)] > 0){ dup = true; pool[sig(x)]--; }
+    seen.add(x.key); return Object.assign(x, { dup });
+  });
+  preview.statement = res.statement || null;
+  UI.preview = preview;
   if (!UI.preview.length) toast("No messages found in the text.");
 }
 function exampleText(){
@@ -565,7 +586,8 @@ function exampleText(){
 }
 async function aiCategorize(){
   const sample = UI.sample; if (!sample) return;
-  const items = UI.preview.map((x,i) => ({ x, i })).filter(o => !o.x.skip && !o.x.dup);
+  let items = UI.preview.map((x,i) => ({ x, i })).filter(o => !o.x.skip && !o.x.dup);
+  if (items.length > 120) items = items.filter(o => o.x.cat === "other" && (o.x.purpose || o.x.party)).slice(0, 120);
   if (!items.length) return;
   UI.aiBusy = true; render();
   const allowed = P.CATS.map(c => `${c.id} (${c.label}${c.income?", income only":c.neutral?", own transfers":", spending only"})`).join("; ");
@@ -588,6 +610,45 @@ async function aiCategorize(){
     else if (e && e.code !== "cancelled") toast("Claude couldn't check the categories this time.");
   }
   UI.aiBusy = false; render();
+}
+
+/* ---------- PDF statements ---------- */
+const PDFJS = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/";
+function loadScript(src){ return new Promise((ok, bad) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = () => bad(new Error("load")); document.head.appendChild(s); }); }
+async function pdfToText(file){
+  if (!window.pdfjsLib){ await loadScript(PDFJS + "pdf.min.js"); }
+  if (!window.pdfjsWorker){ await loadScript(PDFJS + "pdf.worker.min.js"); }
+  const lib = window.pdfjsLib;
+  lib.GlobalWorkerOptions.workerSrc = PDFJS + "pdf.worker.min.js";
+  const doc = await lib.getDocument({ data: await file.arrayBuffer(), isEvalSupported: false, disableFontFace: true }).promise;
+  const lines = [];
+  for (let p = 1; p <= doc.numPages; p++){
+    UI.pdfBusy = `Reading page ${p} of ${doc.numPages}…`; const lab = document.querySelector('label[for="pdf-in"]'); if (lab) lab.textContent = UI.pdfBusy;
+    const page = await doc.getPage(p), tc = await page.getTextContent(), rows = [];
+    for (const it of tc.items){
+      if (!it.str || !it.str.trim()) continue;
+      const x = it.transform[4], y = it.transform[5];
+      let r = rows.find(r => Math.abs(r.y - y) < 3);
+      if (!r){ r = { y, items: [] }; rows.push(r); }
+      r.items.push({ x, s: it.str.trim() });
+    }
+    rows.sort((a,b) => b.y - a.y);
+    for (const r of rows){ r.items.sort((a,b) => a.x - b.x); lines.push(r.items.map(i => i.s).join("   ")); }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+async function importPdf(file){
+  if (!file) return;
+  UI.pdfBusy = "Opening the PDF…"; UI.preview = null; render();
+  try {
+    const text = await pdfToText(file);
+    if (!P.isStatement(text)){ toast("This PDF doesn't look like a bank statement this page can read yet."); }
+    else { readText(text); if (UI.preview && !UI.preview.length) toast("No transactions found in this PDF."); }
+  } catch(e){
+    toast("Couldn't open this PDF here. Open it, select all, copy, and paste the text in the box above.");
+  }
+  UI.pdfBusy = null; render();
 }
 
 /* ---------- events ---------- */
@@ -632,6 +693,7 @@ document.addEventListener("click", e => {
 });
 document.addEventListener("change", e => {
   const el = e.target;
+  if (el.id === "pdf-in"){ importPdf(el.files && el.files[0]); el.value = ""; return; }
   if (el.dataset.pv){ const x = UI.preview[+el.dataset.i]; if (!x) return; if (el.dataset.pv === "cat") x.cat = el.value; else if (el.value){ x.date = el.value; x.dateGuessed = false; render(); } return; }
   if (el.dataset.chg){
     const id = el.dataset.id, f = findTx(id); if (!f) return;
